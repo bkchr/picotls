@@ -572,20 +572,38 @@ static int do_sign(EVP_PKEY *key, ptls_buffer_t *outbuf, ptls_iovec_t input, con
             goto Exit;
         }
     }
-    if (EVP_DigestSignUpdate(ctx, input.base, input.len) != 1) {
-        ret = PTLS_ERROR_LIBRARY;
-        goto Exit;
+
+    if (md == NULL) {
+        if (EVP_DigestSign(ctx, NULL, &siglen, input.base, input.len) != 1) {
+            ret = PTLS_ERROR_LIBRARY;
+            goto Exit;
+        }
+    } else {
+        if (EVP_DigestSignUpdate(ctx, input.base, input.len) != 1) {
+            ret = PTLS_ERROR_LIBRARY;
+            goto Exit;
+        }
+        if (EVP_DigestSignFinal(ctx, NULL, &siglen) != 1) {
+            ret = PTLS_ERROR_LIBRARY;
+            goto Exit;
+        }
     }
-    if (EVP_DigestSignFinal(ctx, NULL, &siglen) != 1) {
-        ret = PTLS_ERROR_LIBRARY;
-        goto Exit;
-    }
+
     if ((ret = ptls_buffer_reserve(outbuf, siglen)) != 0)
         goto Exit;
-    if (EVP_DigestSignFinal(ctx, outbuf->base + outbuf->off, &siglen) != 1) {
-        ret = PTLS_ERROR_LIBRARY;
-        goto Exit;
+
+    if (md == NULL) {
+        if (EVP_DigestSign(ctx, outbuf->base + outbuf->off, &siglen, input.base, input.len) != 1) {
+            ret = PTLS_ERROR_LIBRARY;
+            goto Exit;
+        }
+    } else {
+        if (EVP_DigestSignFinal(ctx, outbuf->base + outbuf->off, &siglen) != 1) {
+            ret = PTLS_ERROR_LIBRARY;
+            goto Exit;
+        }
     }
+
     outbuf->off += siglen;
 
     ret = 0;
@@ -840,21 +858,57 @@ static X509 *to_x509(ptls_iovec_t vec)
     return d2i_X509(NULL, &p, vec.len);
 }
 
-static int verify_sign(void *verify_ctx, ptls_iovec_t data, ptls_iovec_t signature)
+static int get_sign_algorithm(uint16_t sign_algo, const EVP_MD **algo)
+{
+    switch (sign_algo) {
+    case PTLS_SIGNATURE_RSA_PSS_RSAE_SHA256:
+    case PTLS_SIGNATURE_ECDSA_SECP256R1_SHA256:
+        *algo = EVP_sha256();
+        break;
+    case PTLS_SIGNATURE_RSA_PSS_RSAE_SHA384:
+#if defined(NID_secp384r1) && !OPENSSL_NO_SHA384
+    case PTLS_SIGNATURE_ECDSA_SECP384R1_SHA384:
+#endif
+        *algo = EVP_sha384();
+        break;
+    case PTLS_SIGNATURE_RSA_PSS_RSAE_SHA512:
+#if defined(NID_secp384r1) && !OPENSSL_NO_SHA512
+    case PTLS_SIGNATURE_ECDSA_SECP521R1_SHA512:
+#endif
+        *algo = EVP_sha512();
+        break;
+#if defined(NID_ED25519)
+    case PTLS_SIGNATURE_RSA_ED25519:
+        *algo = NULL;
+        break;
+#endif
+    default:
+        return PTLS_ALERT_ILLEGAL_PARAMETER;
+    }
+
+    return 0;
+}
+
+static int verify_sign(void *verify_ctx, ptls_iovec_t data, ptls_iovec_t signature, uint16_t sign_algo)
 {
     EVP_PKEY *key = verify_ctx;
     EVP_MD_CTX *ctx = NULL;
     EVP_PKEY_CTX *pkey_ctx = NULL;
+    const EVP_MD *algo = NULL;
     int ret = 0;
 
     if (data.base == NULL)
         goto Exit;
 
+    if ((ret = get_sign_algorithm(sign_algo, &algo)) != 1) {
+        goto Exit;
+    }
+
     if ((ctx = EVP_MD_CTX_create()) == NULL) {
         ret = PTLS_ERROR_NO_MEMORY;
         goto Exit;
     }
-    if (EVP_DigestVerifyInit(ctx, &pkey_ctx, EVP_sha256(), NULL, key) != 1) {
+    if (EVP_DigestVerifyInit(ctx, &pkey_ctx, algo, NULL, key) != 1) {
         ret = PTLS_ERROR_LIBRARY;
         goto Exit;
     }
@@ -872,13 +926,22 @@ static int verify_sign(void *verify_ctx, ptls_iovec_t data, ptls_iovec_t signatu
             goto Exit;
         }
     }
-    if (EVP_DigestVerifyUpdate(ctx, data.base, data.len) != 1) {
-        ret = PTLS_ERROR_LIBRARY;
-        goto Exit;
-    }
-    if (EVP_DigestVerifyFinal(ctx, signature.base, signature.len) != 1) {
-        ret = PTLS_ALERT_DECRYPT_ERROR;
-        goto Exit;
+
+    if (algo == NULL) {
+        if (EVP_DigestVerify(ctx, signature.base, signature.len,
+                             data.base, data.len) != 1) {
+            ret = PTLS_ALERT_DECRYPT_ERROR;
+            goto Exit;
+        }
+    } else {
+        if (EVP_DigestVerifyUpdate(ctx, data.base, data.len) != 1) {
+            ret = PTLS_ERROR_LIBRARY;
+            goto Exit;
+        }
+        if (EVP_DigestVerifyFinal(ctx, signature.base, signature.len) != 1) {
+            ret = PTLS_ALERT_DECRYPT_ERROR;
+            goto Exit;
+        }
     }
     ret = 0;
 
@@ -928,6 +991,11 @@ int ptls_openssl_init_sign_certificate(ptls_openssl_sign_certificate_t *self, EV
         }
         EC_KEY_free(eckey);
     } break;
+#if defined(NID_ED25519)
+    case EVP_PKEY_ED25519:
+        PUSH_SCHEME(PTLS_SIGNATURE_RSA_ED25519, NULL);
+        break;
+#endif
     default:
         return PTLS_ERROR_INCOMPATIBLE_KEY;
     }
@@ -1071,7 +1139,7 @@ Exit:
     return ret;
 }
 
-static int verify_cert(ptls_verify_certificate_t *_self, ptls_t *tls, int (**verifier)(void *, ptls_iovec_t, ptls_iovec_t),
+static int verify_cert(ptls_verify_certificate_t *_self, ptls_t *tls, int (**verifier)(void *, ptls_iovec_t, ptls_iovec_t, uint16_t),
                        void **verify_data, ptls_iovec_t *certs, size_t num_certs)
 {
     ptls_openssl_verify_certificate_t *self = (ptls_openssl_verify_certificate_t *)_self;

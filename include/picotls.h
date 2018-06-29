@@ -72,6 +72,7 @@ extern "C" {
 #define PTLS_SIGNATURE_RSA_PSS_RSAE_SHA256 0x0804
 #define PTLS_SIGNATURE_RSA_PSS_RSAE_SHA384 0x0805
 #define PTLS_SIGNATURE_RSA_PSS_RSAE_SHA512 0x0806
+#define PTLS_SIGNATURE_RSA_ED25519 0x0807
 
 /* error classes and macros */
 #define PTLS_ERROR_CLASS_SELF_ALERT 0
@@ -370,7 +371,7 @@ PTLS_CALLBACK_TYPE(int, sign_certificate, ptls_t *tls, uint16_t *selected_algori
  * callback.
  */
 PTLS_CALLBACK_TYPE(int, verify_certificate, ptls_t *tls,
-                   int (**verify_sign)(void *verify_ctx, ptls_iovec_t data, ptls_iovec_t sign), void **verify_data,
+                   int (**verify_sign)(void *verify_ctx, ptls_iovec_t data, ptls_iovec_t sign, uint16_t sign_data), void **verify_data,
                    ptls_iovec_t *certs, size_t num_certs);
 /**
  * encrypt-and-signs (or verify-and-decrypts) a ticket (server-only)

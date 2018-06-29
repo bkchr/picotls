@@ -241,7 +241,7 @@ struct st_ptls_t {
      * will be used by the client and the server (if require_client_authentication is set).
      */
     struct {
-        int (*cb)(void *verify_ctx, ptls_iovec_t data, ptls_iovec_t signature);
+        int (*cb)(void *verify_ctx, ptls_iovec_t data, ptls_iovec_t signature, uint16_t algo);
         void *verify_ctx;
     } certificate_verify;
     /**
@@ -2148,19 +2148,10 @@ static int handle_certificate_verify(ptls_t *tls, ptls_iovec_t message, const ch
         src = end;
     });
 
-    /* validate */
-    switch (algo) {
-    case PTLS_SIGNATURE_RSA_PSS_RSAE_SHA256:
-    case PTLS_SIGNATURE_ECDSA_SECP256R1_SHA256:
-        /* ok */
-        break;
-    default:
-        ret = PTLS_ALERT_ILLEGAL_PARAMETER;
-        goto Exit;
-    }
     signdata_size = build_certificate_verify_signdata(signdata, tls->key_schedule, context_string);
     if (tls->certificate_verify.cb != NULL) {
-        ret = tls->certificate_verify.cb(tls->certificate_verify.verify_ctx, ptls_iovec_init(signdata, signdata_size), signature);
+        ret = tls->certificate_verify.cb(tls->certificate_verify.verify_ctx, ptls_iovec_init(signdata, signdata_size),
+                                         signature, algo);
     } else {
         ret = 0;
     }
@@ -3342,7 +3333,7 @@ void ptls_free(ptls_t *tls)
             free(tls->client.certificate_request.context.base);
     }
     if (tls->certificate_verify.cb != NULL) {
-        tls->certificate_verify.cb(tls->certificate_verify.verify_ctx, ptls_iovec_init(NULL, 0), ptls_iovec_init(NULL, 0));
+        tls->certificate_verify.cb(tls->certificate_verify.verify_ctx, ptls_iovec_init(NULL, 0), ptls_iovec_init(NULL, 0), 0);
     }
     if (tls->early_data != NULL) {
         ptls_clear_memory(tls->early_data, sizeof(*tls->early_data));
